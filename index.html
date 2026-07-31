@@ -1,0 +1,611 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc 
+} from 'firebase/firestore';
+import { 
+  getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+} from 'firebase/auth';
+import { 
+  Flame, ShieldCheck, XCircle, Coins, ChevronRight, Lock, 
+  CheckCircle2, ClipboardCheck, BookOpen, Info, HelpCircle, 
+  X, ExternalLink, Heart, AlertTriangle, Users, Trophy, Sparkles, HelpCircle as QuizIcon
+} from 'lucide-react';
+
+// --- CONFIGURATION FIREBASE ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'echo-du-desir-v2';
+
+// --- FORMULAIRES GOOGLE FORMS DÉFINITIFS ---
+const FORMS = {
+  INSCRIPTION: "https://docs.google.com/forms/d/e/1FAIpQLSfQfMoe7RhVheYcCMmoM9asfO4yE2J5wP-yfJ13laj76GDAFw/viewform",
+  MI_PARCOURS: "https://docs.google.com/forms/d/e/1FAIpQLSfHdlHHK6Pk2vrPLjvUyjLs50zB0DPcx3s-b1eiew7IX51Y2g/viewform",
+  FINAL: "https://docs.google.com/forms/d/e/1FAIpQLSfOUsfKSTZy3Yf5DponzrpafIVaXyHzQDeRGJIh2l18wEDmvg/viewform"
+};
+
+// --- DÉFIS ET QUIZ INTIMÉS (Miroir du Désir) ---
+const CHALLENGES = [
+  { id: 1, phase: 1, title: "Le Compliment Camouflé", tag: "Subtilité", cost: 1, mission: "Identifier une qualité UNIQUE de l'autre que tu n'as jamais avouée. L'intégrer dans une phrase banale par SMS.", preuve: "Répondre par un seul emoji codé qui valide le compliment." },
+  { id: 2, phase: 1, title: "La Minute du Désir", tag: "Anticipation", cost: 1, mission: "Envoyer une description ultra-précise d'un détail non verbal observé lors de votre toute première rencontre.", preuve: "Audio d'une phrase expliquant pourquoi ce détail était important." },
+  { id: 3, phase: 1, title: "La Promesse sous Scellés", tag: "Mystère", cost: 1, mission: "Filme-toi en train d'emballer un objet personnel lentement et en silence. Envoie la vidéo sans commentaire.", preuve: "Message décrivant la première chose que tu feras de cet objet une fois libéré." },
+  { id: 4, phase: 1, title: "Sincérité Spontanée", tag: "Compte à Rebours", cost: 1, mission: "Tu as 3 minutes pour envoyer un audio de 10s max. Confesse la première chose 'audacieuse' pensée ce matin au réveil.", preuve: "Valider par un mot qui définit l'impact (ex: 'Troublant')." },
+  { id: 5, phase: 1, title: "Le Désir du Moment", tag: "Connexion", cost: 1, mission: "Envoie : 'Si tu étais là, à cet instant précis, je...' Complète avec une envie sensorielle simple.", preuve: "Répondre par une seule action concrète." },
+  { id: 6, phase: 2, title: "Focalisation Charnelle", tag: "Macro", cost: 2, mission: "Photo macro d'une zone minuscule et charnelle de ton corps. Esthétique mais ambiguë.", preuve: "Audio de 10s soufflant le nom de la zone identifiée." },
+  { id: 7, phase: 2, title: "L'Attente Immobile", tag: "Contrôle", cost: 2, mission: "Définir une période de 2h où le Récepteur ne doit absolument pas vous toucher (en étant ensemble).", preuve: "Confesser la chose que vous vouliez le plus faire pendant ces 2h." }
+];
+
+const DUEL_QUIZ = [
+  { id: 'q1', question: "Quel est le souvenir tactile le plus intense partagé par votre duo cette année ?", options: ["Un effleurement imprévu en public", "Un regard fixe prolongé sans se toucher", "Un moment improvisé sous la pluie/au lit"] },
+  { id: 'q2', question: "Quelle est la zone du corps de ton partenaire qui réagit le plus vite à un murmure ?", options: ["Le creux du cou / la nuque", "Le bas du dos / les hanches", "L'arrière de l'oreille / les lèvres"] },
+  { id: 'q3', question: "Si ton partenaire devait choisir ton gage final ce soir, ce serait...", options: ["Un massage sensoriel de 30 min les yeux bandés", "La préparation d'un dîner secret en tenue audacieuse", "La confession d'un fantasme non exploré"] }
+];
+
+// Moteur de sons synthétisés
+const playSound = (freq = 440, duration = 0.15) => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
+  } catch (e) {}
+};
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [duoCode, setDuoCode] = useState('');
+  const [gameState, setGameState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('auth'); 
+  const [activeCard, setActiveCard] = useState(null);
+  const [showHalte, setShowHalte] = useState(false);
+  const [activeQuiz, setActiveQuiz] = useState(null);
+  const [quizAnswer, setQuizAnswer] = useState('');
+
+  // 1. Authentification
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+  }, []);
+
+  // 2. Synchronisation Temps Réel avec Firestore
+  useEffect(() => {
+    if (!user || !duoCode) return;
+
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sessions', duoCode);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setGameState(docSnap.data());
+        if (view === 'sync' || view === 'auth') setView('dashboard');
+      } else {
+        setDoc(docRef, {
+          jd: 20,
+          completedIds: [],
+          hasFeedbackMid: false,
+          hasFeedbackFinal: false,
+          pactGage: "Un dîner d'exception offert par celui qui a déclenché le plus de défis.",
+          quizAnswers: {},
+          createdAt: new Date().toISOString()
+        });
+      }
+    }, (error) => console.error("Firestore Sync Error:", error));
+
+    return () => unsubscribe();
+  }, [user, duoCode]);
+
+  const updateGame = async (updates) => {
+    if (!duoCode) return;
+    playSound(520, 0.1);
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sessions', duoCode);
+    await updateDoc(docRef, updates);
+  };
+
+  const completeChallenge = (card) => {
+    if (gameState.completedIds.includes(card.id)) return;
+    updateGame({
+      completedIds: [...gameState.completedIds, card.id],
+      jd: gameState.jd + card.cost
+    });
+    setActiveCard(null);
+  };
+
+  const submitQuizAnswer = (quizId, option) => {
+    const newAnswers = { ...(gameState.quizAnswers || {}), [quizId]: option };
+    updateGame({
+      quizAnswers: newAnswers,
+      jd: gameState.jd + 2 // Récompense de 2 JD pour partage de vérité
+    });
+    setActiveQuiz(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center">
+        <Flame className="w-12 h-12 text-orange-600 animate-pulse mb-4" />
+        <p className="text-slate-500 font-serif text-sm italic">Connexion au Rituel...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col min-h-screen bg-[#050505] text-slate-100 font-sans select-none overflow-hidden">
+      
+      {/* VUE SPLASH / ACCUEIL */}
+      {view === 'auth' && <SplashView onStart={() => setView('sync')} />}
+
+      {/* VUE SYNCHRONISATION DUO */}
+      {view === 'sync' && (
+        <SyncView 
+          onJoin={(code) => setDuoCode(code.toUpperCase())} 
+          onCreate={() => setDuoCode(Math.random().toString(36).substring(2, 6).toUpperCase())} 
+        />
+      )}
+
+      {/* VUE PRINCIPALE D'NAVIGATION */}
+      {view !== 'auth' && view !== 'sync' && (
+        <>
+          {/* Header Status & Trésor */}
+          <header className="px-6 pt-12 pb-4 flex justify-between items-center bg-black/80 backdrop-blur-md sticky top-0 z-40 border-b border-white/5">
+            <button onClick={() => setView('grimoire')} className="p-2.5 bg-white/5 rounded-2xl border border-white/10 text-orange-500 active:scale-95">
+              <BookOpen className="w-5 h-5" />
+            </button>
+            <div className="text-center" onClick={() => setView('dashboard')}>
+              <h1 className="text-sm font-serif italic tracking-[0.3em] uppercase text-white">L'Écho</h1>
+              <p className="text-[8px] tracking-[0.2em] text-orange-500 font-bold uppercase">Duo: {duoCode}</p>
+            </div>
+            <div className="bg-white/5 border border-white/10 px-3.5 py-1.5 rounded-2xl flex items-center gap-2">
+              <Coins className="w-4 h-4 text-yellow-500" />
+              <span className="text-lg font-bold tabular-nums">{gameState?.jd || 0}</span>
+            </div>
+          </header>
+
+          <main className="flex-1 overflow-y-auto px-6 pt-6 pb-40">
+            {view === 'dashboard' && (
+              <div className="space-y-8 animate-in fade-in duration-500">
+                {/* Le Pacte du Climax (Gage de couple inspiré de la vidéo) */}
+                <div className="p-6 bg-gradient-to-br from-orange-950/40 via-black to-slate-950 border border-orange-500/20 rounded-[2.5rem] relative overflow-hidden shadow-2xl">
+                  <div className="flex items-center gap-2 text-orange-500 text-[10px] font-bold uppercase tracking-widest mb-2">
+                    <Trophy className="w-4 h-4" /> Le Pacte du Duo (Enjeu Final)
+                  </div>
+                  <p className="text-slate-200 text-xs italic leading-relaxed mb-4">
+                    "{gameState?.pactGage || "Définissez un gage ultime pour le climax."}"
+                  </p>
+                  <button 
+                    onClick={() => {
+                      const newPact = prompt("Définissez le gage ou la récompense du Climax :", gameState?.pactGage);
+                      if (newPact) updateGame({ pactGage: newPact });
+                    }}
+                    className="text-[9px] uppercase tracking-widest text-slate-500 font-bold underline"
+                  >
+                    Modifier le Pacte
+                  </button>
+                </div>
+
+                {/* Section Parcours */}
+                <section className="space-y-4">
+                  <h2 className="text-[10px] uppercase tracking-[0.3em] text-slate-500 font-bold mb-4">Parcours d'Ascension</h2>
+                  
+                  <PhaseItem 
+                    number="1" 
+                    title="Phase I : L'Écho de la Subtilité" 
+                    desc="Subtilité, Flirt & Connexion"
+                    status="active" 
+                    progress={(gameState?.completedIds.filter(id => id <= 5).length / 5) * 100}
+                    onClick={() => setView('deck')}
+                  />
+
+                  <FormItem 
+                    title="Feedback Mi-Parcours"
+                    description="Obligatoire après le 5e défi"
+                    status={gameState?.completedIds.filter(id => id <= 5).length >= 5 ? (gameState.hasFeedbackMid ? 'completed' : 'urgent') : 'locked'}
+                    link={FORMS.MI_PARCOURS}
+                    onDone={() => updateGame({ hasFeedbackMid: true })}
+                  />
+
+                  <PhaseItem 
+                    number="2" 
+                    title="Phase II : L'Audace de l'Abandon" 
+                    desc="Charnel & Commandes"
+                    status={gameState?.hasFeedbackMid ? "active" : "locked"}
+                    onClick={() => setView('deck')}
+                  />
+
+                  <FormItem 
+                    title="Rapport Final (Climax)"
+                    description="Clôture officielle du protocole"
+                    status={gameState?.completedIds.length >= 7 ? (gameState.hasFeedbackFinal ? 'completed' : 'urgent') : 'locked'}
+                    link={FORMS.FINAL}
+                    onDone={() => updateGame({ hasFeedbackFinal: true })}
+                  />
+                </section>
+
+                {/* Section "Miroir du Désir" (Mode Quiz Intime inspiré de la vidéo) */}
+                <section className="space-y-4 pt-4 border-t border-white/5">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-[10px] uppercase tracking-[0.3em] text-orange-500 font-bold flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5" /> Miroir du Désir (Quiz Intime)
+                    </h2>
+                    <span className="text-[9px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded-full font-bold">+2 JD / Quiz</span>
+                  </div>
+
+                  <div className="grid gap-3">
+                    {DUEL_QUIZ.map(quiz => {
+                      const hasAnswered = !!gameState?.quizAnswers?.[quiz.id];
+                      return (
+                        <button
+                          key={quiz.id}
+                          onClick={() => setActiveQuiz(quiz)}
+                          className={`w-full text-left p-5 rounded-[2rem] border transition-all active:scale-[0.98] ${
+                            hasAnswered ? 'bg-white/5 border-white/5 opacity-60' : 'bg-slate-900 border-orange-500/30 shadow-lg'
+                          }`}
+                        >
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Question de Vérité</span>
+                            {hasAnswered && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                          </div>
+                          <p className="text-xs font-bold text-white leading-tight">{quiz.question}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {/* VUE DECK DE CARTES */}
+            {view === 'deck' && (
+              <div className="animate-in slide-in-from-right duration-300 space-y-6">
+                <button onClick={() => setView('dashboard')} className="text-[10px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 mb-4">
+                  <ChevronRight className="rotate-180 w-3 h-3" /> Dashboard
+                </button>
+                <h2 className="text-3xl font-serif italic text-white mb-6">Cartes de Défis</h2>
+                <div className="grid gap-4">
+                  {CHALLENGES.map(card => {
+                    const isLocked = card.phase === 2 && !gameState?.hasFeedbackMid;
+                    const isDone = gameState?.completedIds.includes(card.id);
+                    return (
+                      <button 
+                        key={card.id}
+                        disabled={isLocked}
+                        onClick={() => setActiveCard(card)}
+                        className={`w-full text-left p-6 rounded-[2rem] border transition-all ${
+                          isDone ? 'bg-emerald-500/5 border-emerald-500/20 opacity-40' :
+                          isLocked ? 'opacity-10 border-white/5' : 'bg-white/[0.03] border-white/10 shadow-2xl active:scale-[0.98]'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-[9px] font-bold text-orange-500 uppercase tracking-widest">{isLocked ? 'Verrouillé' : card.tag}</span>
+                          {isDone ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <span className="text-yellow-500 font-bold text-[10px]">-{card.cost} JD</span>}
+                        </div>
+                        <h3 className="text-base font-bold text-white">{card.title}</h3>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* VUE LE GRIMOIRE */}
+            {view === 'grimoire' && <GrimoireView onClose={() => setView('dashboard')} />}
+          </main>
+
+          {/* Footer Sécurité (Bouton HALTE) */}
+          <footer className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black via-black/90 to-transparent z-30">
+            <button 
+              onClick={() => setShowHalte(true)}
+              className="w-full bg-red-500/5 border border-red-500/20 text-red-500/80 py-4 rounded-2xl font-bold text-[10px] tracking-[0.3em] uppercase flex items-center justify-center gap-2 active:scale-95"
+            >
+              <AlertTriangle className="w-4 h-4" /> Serment de Halte
+            </button>
+          </footer>
+        </>
+      )}
+
+      {/* MODALS */}
+      {activeCard && (
+        <CardModal 
+          card={activeCard} 
+          canAfford={gameState?.jd >= activeCard.cost || gameState?.completedIds.includes(activeCard.id)}
+          onStart={() => updateGame({ jd: gameState.jd - activeCard.cost })}
+          onComplete={() => completeChallenge(activeCard)} 
+          onClose={() => setActiveCard(null)} 
+          isDone={gameState?.completedIds.includes(activeCard.id)}
+        />
+      )}
+
+      {activeQuiz && (
+        <QuizModal 
+          quiz={activeQuiz}
+          savedAnswer={gameState?.quizAnswers?.[activeQuiz.id]}
+          onSubmit={(option) => submitQuizAnswer(activeQuiz.id, option)}
+          onClose={() => setActiveQuiz(null)}
+        />
+      )}
+
+      {showHalte && <HalteModal onClose={() => setShowHalte(false)} />}
+    </div>
+  );
+};
+
+// --- SUB-COMPOSANTS ---
+
+const SplashView = ({ onStart }) => (
+  <div className="min-h-screen bg-black flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-700">
+    <div className="relative mb-12 scale-125">
+      <Flame className="w-16 h-16 text-orange-600 animate-pulse" />
+      <div className="absolute inset-0 bg-orange-600 blur-[60px] opacity-20"></div>
+    </div>
+    <h1 className="text-4xl font-serif italic text-white mb-2 tracking-[0.4em] uppercase">L'Écho</h1>
+    <p className="text-orange-500/40 text-[10px] uppercase tracking-[0.5em] font-bold mb-16 italic">Du Désir</p>
+    <a 
+      href={FORMS.INSCRIPTION} 
+      target="_blank" 
+      className="w-full max-w-xs mb-4 p-4 rounded-3xl bg-white/5 border border-white/10 text-orange-400 font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2"
+    >
+      Formulaire d'Inscription Initial <ExternalLink className="w-4 h-4" />
+    </a>
+    <button onClick={onStart} className="w-full max-w-xs py-5 bg-white text-black rounded-3xl font-bold uppercase text-[10px] tracking-widest active:scale-95 transition-transform shadow-2xl">
+      Lancer le Protocole
+    </button>
+  </div>
+);
+
+const SyncView = ({ onJoin, onCreate }) => {
+  const [input, setInput] = useState('');
+  return (
+    <div className="min-h-screen bg-[#050505] p-8 flex flex-col justify-center animate-in fade-in">
+      <h2 className="text-3xl font-serif italic text-white mb-2">Synchronisation Duo</h2>
+      <p className="text-slate-500 text-xs mb-12 leading-relaxed">Associez vos deux téléphones pour partager votre trésor de JD et vos choix en temps réel.</p>
+      
+      <div className="space-y-6">
+        <div className="p-8 bg-white/[0.02] border border-white/5 rounded-[2.5rem] space-y-6 text-center">
+          <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">Saisir le Code Duo</label>
+          <input 
+            type="text" 
+            maxLength={4}
+            placeholder="XXXX"
+            value={input}
+            onChange={(e) => setInput(e.target.value.toUpperCase())}
+            className="w-full bg-black border border-white/10 rounded-2xl py-5 text-center text-3xl font-bold tracking-[0.5em] text-orange-500 focus:border-orange-500 outline-none"
+          />
+          <button 
+            disabled={input.length < 4}
+            onClick={() => onJoin(input)}
+            className="w-full bg-white text-black py-4 rounded-2xl font-bold uppercase text-[10px] tracking-widest disabled:opacity-20"
+          >
+            Rejoindre le Partenaire
+          </button>
+        </div>
+
+        <div className="relative py-2">
+          <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
+          <div className="relative flex justify-center"><span className="px-4 bg-[#050505] text-[10px] text-slate-700 uppercase tracking-widest">Ou</span></div>
+        </div>
+
+        <button onClick={onCreate} className="w-full py-5 border border-white/10 rounded-[2rem] text-white font-bold uppercase text-[10px] tracking-widest flex items-center justify-center gap-3 active:bg-white/5">
+          <Users className="w-4 h-4 text-orange-500" /> Générer un nouveau Code Duo
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const PhaseItem = ({ number, title, desc, status, progress, onClick }) => (
+  <button onClick={onClick} className={`w-full p-6 rounded-[2.5rem] border transition-all text-left flex items-center gap-5 ${
+    status === 'active' ? 'bg-white border-white text-black shadow-2xl' : 'bg-transparent border-white/5 opacity-20'
+  }`}>
+    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-serif text-xl font-bold ${status === 'active' ? 'bg-black text-white' : 'bg-white/5'}`}>{number}</div>
+    <div className="flex-1">
+      <h3 className="font-bold text-sm tracking-tight">{title}</h3>
+      <p className={`text-[10px] mt-0.5 ${status === 'active' ? 'text-slate-500' : 'text-slate-600'}`}>{desc}</p>
+      {status === 'active' && progress !== undefined && (
+        <div className="mt-3 h-1 bg-black/10 rounded-full overflow-hidden w-full">
+          <div className="bg-orange-500 h-full transition-all duration-700" style={{width: `${progress}%`}}></div>
+        </div>
+      )}
+    </div>
+    <ChevronRight className="w-5 h-5 opacity-40" />
+  </button>
+);
+
+const FormItem = ({ title, description, status, link, onDone }) => {
+  const isLocked = status === 'locked';
+  const isCompleted = status === 'completed';
+  return (
+    <div className={`w-full p-6 rounded-[2.5rem] border transition-all ${
+      isCompleted ? 'bg-emerald-500/5 border-emerald-500/10' :
+      status === 'urgent' ? 'bg-orange-600 border-orange-600 shadow-xl shadow-orange-600/20' : 'bg-white/5 border-white/5'
+    } ${isLocked ? 'opacity-20' : ''}`}>
+      <div className="flex justify-between items-center mb-3">
+        <div>
+          <h3 className={`font-bold text-sm ${isCompleted ? 'text-emerald-500' : 'text-white'}`}>{title}</h3>
+          <p className="text-[10px] text-slate-500 uppercase tracking-tighter">{description}</p>
+        </div>
+        {isCompleted ? <CheckCircle2 className="text-emerald-500" /> : isLocked ? <Lock className="text-slate-700" /> : <ClipboardCheck className="text-white" />}
+      </div>
+      {!isLocked && !isCompleted && (
+        <div className="space-y-3 pt-2">
+          <a href={link} target="_blank" className="block text-center py-3 bg-white/10 rounded-2xl text-[10px] font-bold uppercase tracking-widest text-white">Ouvrir le questionnaire</a>
+          <button onClick={onDone} className="w-full py-3 bg-white text-black rounded-2xl text-[10px] font-bold uppercase tracking-widest">Valider la soumission</button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CardModal = ({ card, canAfford, onStart, onComplete, onClose, isDone }) => {
+  const [step, setStep] = useState(isDone ? 'done' : 'intro');
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/98 flex flex-col p-6 animate-in fade-in duration-300">
+      <div className="flex-1 flex flex-col justify-center max-w-sm mx-auto w-full">
+        <div className="bg-[#111] border border-orange-500/30 rounded-[3.5rem] p-8 relative shadow-2xl">
+          <div className="flex justify-between items-center mb-6">
+            <span className="text-[10px] font-bold text-orange-500 uppercase tracking-[0.3em]">{card.tag}</span>
+            {!isDone && <span className="text-yellow-500 font-bold text-xs">-{card.cost} JD</span>}
+          </div>
+
+          <h2 className="text-2xl font-serif text-white mb-6 italic">"{card.title}"</h2>
+
+          {step === 'intro' ? (
+            <div className="space-y-6">
+              <p className="text-slate-400 text-xs leading-relaxed">
+                Rappel : Avant d'engager ce défi, validez la disponibilité de votre partenaire ("Oui, je suis prêt(e)").
+              </p>
+              {!canAfford && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-500 text-[10px] font-bold uppercase tracking-widest text-center">Trésor de JD insuffisant</div>}
+            </div>
+          ) : (
+            <div className="space-y-8 animate-in slide-in-from-bottom-4">
+              <div>
+                <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] block mb-2">Mission du Lanceur</label>
+                <p className="text-base text-slate-100 leading-relaxed font-light">{card.mission}</p>
+              </div>
+              <div className="pt-6 border-t border-white/10">
+                <label className="text-[9px] uppercase font-bold text-orange-500/70 tracking-[0.2em] block mb-2">Preuve du Récepteur</label>
+                <p className="text-xs text-orange-100/60 italic leading-relaxed">{card.preuve}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-6 max-w-sm mx-auto w-full">
+        {step === 'intro' ? (
+          <button 
+            disabled={!canAfford}
+            onClick={() => { onStart(); setStep('mission'); }}
+            className="w-full bg-orange-600 text-white py-5 rounded-3xl font-bold uppercase text-[10px] tracking-widest disabled:opacity-20 shadow-2xl"
+          >
+            Débloquer (-{card.cost} JD)
+          </button>
+        ) : (
+          <button 
+            onClick={onComplete}
+            className="w-full bg-emerald-600 text-white py-5 rounded-3xl font-bold uppercase text-[10px] tracking-widest shadow-2xl"
+          >
+            Valider la Preuve (+{card.cost} JD)
+          </button>
+        )}
+        <button onClick={onClose} className="w-full text-slate-600 py-2 text-[10px] font-bold uppercase tracking-widest">Fermer</button>
+      </div>
+    </div>
+  );
+};
+
+const QuizModal = ({ quiz, savedAnswer, onSubmit, onClose }) => {
+  const [selected, setSelected] = useState(savedAnswer || '');
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/98 flex flex-col p-6 animate-in fade-in duration-300">
+      <div className="flex-1 flex flex-col justify-center max-w-sm mx-auto w-full">
+        <div className="bg-[#111] border border-orange-500/20 rounded-[3.5rem] p-8 relative shadow-2xl">
+          <span className="text-[9px] font-bold text-orange-500 uppercase tracking-widest block mb-4">Miroir du Désir</span>
+          <h3 className="text-lg font-serif text-white mb-6 leading-snug">{quiz.question}</h3>
+          
+          <div className="space-y-3 mb-6">
+            {quiz.options.map((opt, idx) => (
+              <button
+                key={idx}
+                onClick={() => setSelected(opt)}
+                className={`w-full text-left p-4 rounded-2xl border text-xs transition-all ${
+                  selected === opt ? 'bg-orange-600 border-orange-500 text-white font-bold' : 'bg-white/5 border-white/5 text-slate-400'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+
+          {savedAnswer && (
+            <p className="text-[10px] text-emerald-400 italic text-center">Votre réponse est enregistrée sur votre profil duo.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-6 max-w-sm mx-auto w-full">
+        <button 
+          disabled={!selected}
+          onClick={() => onSubmit(selected)}
+          className="w-full bg-white text-black py-5 rounded-3xl font-bold uppercase text-[10px] tracking-widest disabled:opacity-20 shadow-2xl"
+        >
+          Valider ma réponse (+2 JD)
+        </button>
+        <button onClick={onClose} className="w-full text-slate-600 py-2 text-[10px] font-bold uppercase tracking-widest">Annuler</button>
+      </div>
+    </div>
+  );
+};
+
+const GrimoireView = ({ onClose }) => (
+  <div className="fixed inset-0 z-[200] bg-[#050505] p-8 pb-40 overflow-y-auto animate-in slide-in-from-top duration-500">
+    <div className="flex justify-between items-center mb-12">
+      <h2 className="text-3xl font-serif italic text-white">Le Grimoire</h2>
+      <button onClick={onClose} className="p-3 bg-white/5 rounded-full"><X /></button>
+    </div>
+
+    <div className="space-y-12">
+      <section>
+        <h3 className="text-orange-500 text-[10px] font-bold uppercase tracking-[0.4em] mb-4">I. Le Consentement</h3>
+        <p className="text-sm text-slate-300 leading-relaxed font-light">
+          Le récepteur doit activer <b className="text-white">explicitement</b> son désir avant chaque défi par la phrase : <span className="text-white font-medium italic">"Oui, je suis prêt(e)"</span>.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="text-orange-500 text-[10px] font-bold uppercase tracking-[0.4em] mb-4">II. Le Serment de Halte</h3>
+        <p className="text-sm text-slate-300 leading-relaxed font-light">
+          Le mot clé <b className="text-red-500 uppercase">Halte</b> est souverain. Il annule tout défi immédiatement sans condition ni justification.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="text-orange-500 text-[10px] font-bold uppercase tracking-[0.4em] mb-4">III. Trésor du Désir (20 JD)</h3>
+        <p className="text-sm text-slate-300 leading-relaxed font-light">
+          Chaque défi lancé consomme vos JD communs. Chaque preuve validée ou quiz partagé crédite à nouveau le trésor.
+        </p>
+      </section>
+    </div>
+
+    <div className="fixed bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black to-transparent">
+      <button onClick={onClose} className="w-full bg-white text-black py-5 rounded-[2rem] font-bold uppercase text-[10px] tracking-widest shadow-2xl">
+        Retour au Duo
+      </button>
+    </div>
+  </div>
+);
+
+const HalteModal = ({ onClose }) => (
+  <div className="fixed inset-0 z-[300] bg-red-950/98 p-10 flex items-center justify-center animate-in zoom-in-95">
+    <div className="text-center max-w-xs">
+      <AlertTriangle className="w-16 h-16 text-white mx-auto mb-8 opacity-80" />
+      <h2 className="text-3xl font-serif font-bold text-white mb-6 italic">Halte Invoqué</h2>
+      <p className="text-red-100/60 leading-relaxed mb-12 text-sm font-light">
+        L'expérience est suspendue. Retrouvez-vous dans la bienveillance. Aucun JD n'est perdu.
+      </p>
+      <button onClick={onClose} className="w-full bg-white text-red-950 py-5 rounded-3xl font-bold uppercase text-[10px] tracking-widest">
+        Reprendre plus tard
+      </button>
+    </div>
+  </div>
+);
+
+export default App;
